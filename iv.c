@@ -39,6 +39,9 @@ int main() {
     SDL_Quit();
     return 1;
   }
+
+  SDL_SetWindowSize(pwindow, image->w, image->h);
+  psurface = SDL_GetWindowSurface(pwindow);
   SDL_BlitSurface(image, NULL, psurface, NULL);
   SDL_UpdateWindowSurface(pwindow);
 

@@ -47,7 +47,9 @@ int main(int argc, char *argv[]) {
 
   SDL_FillRect(psurface, NULL, SDL_MapRGB(psurface->format, 0, 0, 0));
 
-  SDL_Rect dst = {0, 0, win_w, win_h};
+  int offset_x = (psurface->w - win_w) / 2;
+  int offset_y = (psurface->h - win_h) / 2;
+  SDL_Rect dst = {offset_x, offset_y, win_w, win_h};
   SDL_BlitScaled(image, NULL, psurface, &dst);
   SDL_UpdateWindowSurface(pwindow);
 
@@ -67,6 +69,7 @@ int main(int argc, char *argv[]) {
           if (fullscreen) {
             SDL_SetWindowFullscreen(pwindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
             SDL_GetDisplayBounds(0, &display);
+            SDL_SetWindowSize(pwindow, display.w, display.h);
             if (image->w <= display.w && image->h <= display.h) {
               win_w = image->w;
               win_h = image->h;
@@ -81,11 +84,13 @@ int main(int argc, char *argv[]) {
             SDL_SetWindowFullscreen(pwindow, 0);
             win_w = orig_w;
             win_h = orig_h;
+            SDL_SetWindowSize(pwindow, win_w, win_h);
           }
-          SDL_SetWindowSize(pwindow, win_w, win_h);
           psurface = SDL_GetWindowSurface(pwindow);
           SDL_FillRect(psurface, NULL, SDL_MapRGB(psurface->format, 0, 0, 0));
-          dst = (SDL_Rect){0, 0, win_w, win_h};
+          int offset_x = (psurface->w - win_w) / 2;
+          int offset_y = (psurface->h - win_h) / 2;
+          dst = (SDL_Rect){offset_x, offset_y, win_w, win_h};
           SDL_BlitScaled(image, NULL, psurface, &dst);
           SDL_UpdateWindowSurface(pwindow);
         }

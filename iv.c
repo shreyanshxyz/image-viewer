@@ -19,9 +19,12 @@ int main() {
   SDL_Surface *psurface = SDL_GetWindowSurface(pwindow);
 
   Uint8 r, g, b;
-  r = 0x1A;
+  r = 0xFF;
   g = b = 0;
   Uint32 color = SDL_MapRGB(psurface->format, r, g, b);
+
+  int x = 50, y = 50;
+  SDL_Rect pixel = (SDL_Rect){x, y, 1, 1};
   SDL_FillRect(psurface, NULL, color);
 
   SDL_UpdateWindowSurface(pwindow);

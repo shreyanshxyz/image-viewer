@@ -67,8 +67,16 @@ int main(int argc, char *argv[]) {
           if (fullscreen) {
             SDL_SetWindowFullscreen(pwindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
             SDL_GetDisplayBounds(0, &display);
-            win_w = display.w;
-            win_h = display.h;
+            if (image->w <= display.w && image->h <= display.h) {
+              win_w = image->w;
+              win_h = image->h;
+            } else {
+              float scale_w = (float)display.w / image->w;
+              float scale_h = (float)display.h / image->h;
+              float scale = (scale_w < scale_h) ? scale_w : scale_h;
+              win_w = (int)(image->w * scale);
+              win_h = (int)(image->h * scale);
+            }
           } else {
             SDL_SetWindowFullscreen(pwindow, 0);
             win_w = orig_w;

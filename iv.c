@@ -45,6 +45,8 @@ int main(int argc, char *argv[]) {
 
   SDL_Surface *psurface = SDL_GetWindowSurface(pwindow);
 
+  SDL_FillRect(psurface, NULL, SDL_MapRGB(psurface->format, 0, 0, 0));
+
   SDL_Rect dst = {0, 0, win_w, win_h};
   SDL_BlitScaled(image, NULL, psurface, &dst);
   SDL_UpdateWindowSurface(pwindow);
@@ -52,6 +54,9 @@ int main(int argc, char *argv[]) {
   SDL_Event event;
   int running = 1;
   int fullscreen = 0;
+  int orig_w = win_w;
+  int orig_h = win_h;
+
   while (running) {
     while (SDL_PollEvent(&event)) {
       if (event.type == SDL_QUIT) {
@@ -59,7 +64,21 @@ int main(int argc, char *argv[]) {
       } else if (event.type == SDL_KEYDOWN) {
         if (event.key.keysym.sym == SDLK_f) {
           fullscreen = !fullscreen;
-          SDL_SetWindowFullscreen(pwindow, fullscreen ? SDL_WINDOW_FULLSCREEN : 0);
+          if (fullscreen) {
+            SDL_SetWindowFullscreen(pwindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
+            SDL_GetDisplayBounds(0, &display);
+            win_w = display.w;
+            win_h = display.h;
+          } else {
+            SDL_SetWindowFullscreen(pwindow, 0);
+            win_w = orig_w;
+            win_h = orig_h;
+          }
+          SDL_SetWindowSize(pwindow, win_w, win_h);
+          psurface = SDL_GetWindowSurface(pwindow);
+          SDL_FillRect(psurface, NULL, SDL_MapRGB(psurface->format, 0, 0, 0));
+          dst = (SDL_Rect){0, 0, win_w, win_h};
+          SDL_BlitScaled(image, NULL, psurface, &dst);
           SDL_UpdateWindowSurface(pwindow);
         }
       }

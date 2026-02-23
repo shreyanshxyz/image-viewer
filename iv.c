@@ -11,7 +11,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  if (!(IMG_Init(IMG_INIT_JPG) & IMG_INIT_JPG)) {
+  if (!(IMG_Init(IMG_INIT_JPG | IMG_INIT_PNG) & (IMG_INIT_JPG | IMG_INIT_PNG))) {
     fprintf(stderr, "IMG_Init error: %s\n", IMG_GetError());
     SDL_Quit();
     return 1;
@@ -35,10 +35,17 @@ int main(int argc, char *argv[]) {
 
   SDL_Event event;
   int running = 1;
+  int fullscreen = 0;
   while (running) {
     while (SDL_PollEvent(&event)) {
       if (event.type == SDL_QUIT) {
         running = 0;
+      } else if (event.type == SDL_KEYDOWN) {
+        if (event.key.keysym.sym == SDLK_f) {
+          fullscreen = !fullscreen;
+          SDL_SetWindowFullscreen(pwindow, fullscreen ? SDL_WINDOW_FULLSCREEN : 0);
+          SDL_UpdateWindowSurface(pwindow);
+        }
       }
     }
   }

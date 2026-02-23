@@ -7,14 +7,15 @@
 #include <stdlib.h>
 
 int main() {
-  printf("Hello World!\n");
+  const int width = 800, height = 900;
 
   if (SDL_Init(SDL_INIT_VIDEO) != 0) {
     fprintf(stderr, "SDL_Init error: %s\n", SDL_GetError());
     return 1;
   }
-  SDL_Window *pwindow = SDL_CreateWindow("Image Viewer", SDL_WINDOWPOS_CENTERED,
-                                         SDL_WINDOWPOS_CENTERED, 800, 600, 0);
+  SDL_Window *pwindow =
+      SDL_CreateWindow("Image Viewer", SDL_WINDOWPOS_CENTERED,
+                       SDL_WINDOWPOS_CENTERED, width, height, 0);
 
   SDL_Surface *psurface = SDL_GetWindowSurface(pwindow);
 
@@ -23,15 +24,14 @@ int main() {
   g = b = 0;
   Uint32 color = SDL_MapRGB(psurface->format, r, g, b);
 
-  for (int x = 0; x < psurface->w; x++) {
-    for (int y = 0; y < psurface->h; y++) {
-      SDL_Rect pixel = (SDL_Rect){x, y, 1, 1};
+  SDL_Rect pixel = (SDL_Rect){0, 0, 1, 1};
+  for (int x = 0; x < width; x++) {
+    for (int y = 0; y < height; y++) {
+      pixel.x = x;
+      pixel.y = y;
       SDL_FillRect(psurface, &pixel, color);
     }
   }
-  // int x = 50, y = 50;
-  // SDL_Rect pixel = (SDL_Rect){x, y, 1, 1};
-  // SDL_FillRect(psurface, &pixel, color);
 
   SDL_UpdateWindowSurface(pwindow);
 

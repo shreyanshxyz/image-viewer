@@ -17,10 +17,6 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  SDL_Window *pwindow =
-      SDL_CreateWindow("Image Viewer", SDL_WINDOWPOS_CENTERED,
-                       SDL_WINDOWPOS_CENTERED, 800, 900, 0);
-
   SDL_Surface *image = IMG_Load(filepath);
   if (image == NULL) {
     fprintf(stderr, "IMG_Load error: %s\n", IMG_GetError());
@@ -29,7 +25,10 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  SDL_SetWindowSize(pwindow, image->w, image->h);
+  SDL_Window *pwindow =
+      SDL_CreateWindow("Image Viewer", SDL_WINDOWPOS_CENTERED,
+                       SDL_WINDOWPOS_CENTERED, image->w, image->h, 0);
+
   SDL_Surface *psurface = SDL_GetWindowSurface(pwindow);
   SDL_BlitSurface(image, NULL, psurface, NULL);
   SDL_UpdateWindowSurface(pwindow);

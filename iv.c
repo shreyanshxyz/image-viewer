@@ -23,9 +23,15 @@ int main() {
   g = b = 0;
   Uint32 color = SDL_MapRGB(psurface->format, r, g, b);
 
-  int x = 50, y = 50;
-  SDL_Rect pixel = (SDL_Rect){x, y, 1, 1};
-  SDL_FillRect(psurface, NULL, color);
+  for (int x = 0; x < psurface->w; x++) {
+    for (int y = 0; y < psurface->h; y++) {
+      SDL_Rect pixel = (SDL_Rect){x, y, 1, 1};
+      SDL_FillRect(psurface, &pixel, color);
+    }
+  }
+  // int x = 50, y = 50;
+  // SDL_Rect pixel = (SDL_Rect){x, y, 1, 1};
+  // SDL_FillRect(psurface, &pixel, color);
 
   SDL_UpdateWindowSurface(pwindow);
 

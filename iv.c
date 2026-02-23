@@ -25,12 +25,28 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  SDL_Rect display;
+  SDL_GetDisplayBounds(0, &display);
+
+  int win_w = image->w;
+  int win_h = image->h;
+
+  if (win_w > display.w || win_h > display.h) {
+    float scale_w = (float)display.w / win_w;
+    float scale_h = (float)display.h / win_h;
+    float scale = (scale_w < scale_h) ? scale_w : scale_h;
+    win_w = (int)(win_w * scale);
+    win_h = (int)(win_h * scale);
+  }
+
   SDL_Window *pwindow =
       SDL_CreateWindow("Image Viewer", SDL_WINDOWPOS_CENTERED,
-                       SDL_WINDOWPOS_CENTERED, image->w, image->h, 0);
+                       SDL_WINDOWPOS_CENTERED, win_w, win_h, 0);
 
   SDL_Surface *psurface = SDL_GetWindowSurface(pwindow);
-  SDL_BlitSurface(image, NULL, psurface, NULL);
+
+  SDL_Rect dst = {0, 0, win_w, win_h};
+  SDL_BlitScaled(image, NULL, psurface, &dst);
   SDL_UpdateWindowSurface(pwindow);
 
   SDL_Event event;

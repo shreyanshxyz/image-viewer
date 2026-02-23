@@ -1,4 +1,5 @@
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_stdinc.h>
 #include <SDL2/SDL_surface.h>
 #include <SDL2/SDL_timer.h>
 #include <SDL2/SDL_video.h>
@@ -17,7 +18,11 @@ int main() {
 
   SDL_Surface *psurface = SDL_GetWindowSurface(pwindow);
 
-  SDL_FillRect(psurface, NULL, 0xFF0000);
+  Uint8 r, g, b;
+  r = 0x1A;
+  g = b = 0;
+  Uint32 color = SDL_MapRGB(psurface->format, r, g, b);
+  SDL_FillRect(psurface, NULL, color);
 
   SDL_UpdateWindowSurface(pwindow);
 

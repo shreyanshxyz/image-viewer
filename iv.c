@@ -18,6 +18,7 @@ typedef struct {
 typedef struct {
   SDL_Window *window;
   SDL_Surface *image;
+  TTF_Font *ui_font;
   ImageList list;
   int current_index;
   int rotation;
@@ -306,56 +307,217 @@ static void render_text(SDL_Surface *surface, TTF_Font *font, int x, int y, SDL_
   SDL_FreeSurface(label);
 }
 
+typedef struct {
+  SDL_Color bg0;
+  SDL_Color bg1;
+  SDL_Color panel;
+  SDL_Color panel_alt;
+  SDL_Color panel_soft;
+  SDL_Color border;
+  SDL_Color border_soft;
+  SDL_Color text;
+  SDL_Color muted;
+  SDL_Color accent;
+  SDL_Color accent_soft;
+  SDL_Color accent_text;
+} SlateTheme;
+
+static SDL_Color slate_color(Uint8 r, Uint8 g, Uint8 b) {
+  SDL_Color c = {r, g, b, 255};
+  return c;
+}
+
+static SlateTheme slate_theme(void) {
+  SlateTheme t;
+  t.bg0 = slate_color(15, 23, 42);
+  t.bg1 = slate_color(30, 41, 59);
+  t.panel = slate_color(15, 23, 42);
+  t.panel_alt = slate_color(30, 41, 59);
+  t.panel_soft = slate_color(51, 65, 85);
+  t.border = slate_color(71, 85, 105);
+  t.border_soft = slate_color(51, 65, 85);
+  t.text = slate_color(248, 250, 252);
+  t.muted = slate_color(148, 163, 184);
+  t.accent = slate_color(59, 130, 246);
+  t.accent_soft = slate_color(37, 99, 235);
+  t.accent_text = slate_color(240, 249, 255);
+  return t;
+}
+
+static void put_pixel(SDL_Surface *surface, int x, int y, Uint32 color);
+static void draw_line(SDL_Surface *surface, int x0, int y0, int x1, int y1, Uint32 color);
+
+static void fill_vertical_gradient(SDL_Surface *surface, SDL_Color top, SDL_Color bottom) {
+  int w = surface->w;
+  int h = surface->h;
+
+  SDL_LockSurface(surface);
+  for (int y = 0; y < h; y++) {
+    Uint8 r = (Uint8)((top.r * (h - 1 - y) + bottom.r * y) / (h > 1 ? h - 1 : 1));
+    Uint8 g = (Uint8)((top.g * (h - 1 - y) + bottom.g * y) / (h > 1 ? h - 1 : 1));
+    Uint8 b = (Uint8)((top.b * (h - 1 - y) + bottom.b * y) / (h > 1 ? h - 1 : 1));
+    Uint32 px = SDL_MapRGB(surface->format, r, g, b);
+    for (int x = 0; x < w; x++) {
+      put_pixel(surface, x, y, px);
+    }
+  }
+  SDL_UnlockSurface(surface);
+}
+
+static void fill_horizontal_gradient(SDL_Surface *surface, SDL_Rect rect, SDL_Color left, SDL_Color right) {
+  SDL_LockSurface(surface);
+  for (int x = 0; x < rect.w; x++) {
+    Uint8 r = (Uint8)((left.r * (rect.w - 1 - x) + right.r * x) / (rect.w > 1 ? rect.w - 1 : 1));
+    Uint8 g = (Uint8)((left.g * (rect.w - 1 - x) + right.g * x) / (rect.w > 1 ? rect.w - 1 : 1));
+    Uint8 b = (Uint8)((left.b * (rect.w - 1 - x) + right.b * x) / (rect.w > 1 ? rect.w - 1 : 1));
+    Uint32 px = SDL_MapRGB(surface->format, r, g, b);
+    for (int y = 0; y < rect.h; y++) {
+      put_pixel(surface, rect.x + x, rect.y + y, px);
+    }
+  }
+  SDL_UnlockSurface(surface);
+}
+
+static void draw_panel(SDL_Surface *surface, SDL_Rect rect, SDL_Color fill, SDL_Color border) {
+  SDL_FillRect(surface, &rect, SDL_MapRGB(surface->format, fill.r, fill.g, fill.b));
+
+  SDL_Rect top = {rect.x, rect.y, rect.w, 1};
+  SDL_Rect bottom = {rect.x, rect.y + rect.h - 1, rect.w, 1};
+  SDL_Rect left = {rect.x, rect.y, 1, rect.h};
+  SDL_Rect right = {rect.x + rect.w - 1, rect.y, 1, rect.h};
+  SDL_FillRect(surface, &top, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+  SDL_FillRect(surface, &bottom, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+  SDL_FillRect(surface, &left, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+  SDL_FillRect(surface, &right, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+}
+
+static void draw_border(SDL_Surface *surface, SDL_Rect rect, SDL_Color border) {
+  SDL_Rect top = {rect.x, rect.y, rect.w, 1};
+  SDL_Rect bottom = {rect.x, rect.y + rect.h - 1, rect.w, 1};
+  SDL_Rect left = {rect.x, rect.y, 1, rect.h};
+  SDL_Rect right = {rect.x + rect.w - 1, rect.y, 1, rect.h};
+  SDL_FillRect(surface, &top, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+  SDL_FillRect(surface, &bottom, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+  SDL_FillRect(surface, &left, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+  SDL_FillRect(surface, &right, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+}
+
+static void draw_chip(SDL_Surface *surface, SDL_Rect rect, SDL_Color fill, SDL_Color border) {
+  SDL_FillRect(surface, &rect, SDL_MapRGB(surface->format, fill.r, fill.g, fill.b));
+  SDL_Rect top = {rect.x, rect.y, rect.w, 1};
+  SDL_Rect bottom = {rect.x, rect.y + rect.h - 1, rect.w, 1};
+  SDL_Rect left = {rect.x, rect.y, 1, rect.h};
+  SDL_Rect right = {rect.x + rect.w - 1, rect.y, 1, rect.h};
+  SDL_FillRect(surface, &top, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+  SDL_FillRect(surface, &bottom, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+  SDL_FillRect(surface, &left, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+  SDL_FillRect(surface, &right, SDL_MapRGB(surface->format, border.r, border.g, border.b));
+}
+
+static void draw_button(SDL_Surface *surface, SDL_Rect rect, SDL_Color fill, SDL_Color border) {
+  draw_chip(surface, rect, fill, border);
+}
+
+static void draw_chevron(SDL_Surface *surface, SDL_Rect rect, int direction, SDL_Color color) {
+  int cy = rect.y + rect.h / 2;
+  int left = rect.x + rect.w / 2 - 5;
+  int right = rect.x + rect.w / 2 + 5;
+  int top = rect.y + rect.h / 2 - 7;
+  int bottom = rect.y + rect.h / 2 + 7;
+
+  if (direction < 0) {
+    draw_line(surface, right, top, left, cy, SDL_MapRGB(surface->format, color.r, color.g, color.b));
+    draw_line(surface, left, cy, right, bottom, SDL_MapRGB(surface->format, color.r, color.g, color.b));
+  } else {
+    draw_line(surface, left, top, right, cy, SDL_MapRGB(surface->format, color.r, color.g, color.b));
+    draw_line(surface, right, cy, left, bottom, SDL_MapRGB(surface->format, color.r, color.g, color.b));
+  }
+}
+
+static void draw_icon_badge(SDL_Surface *surface, SDL_Rect rect, const char *label, SDL_Color fill, SDL_Color border, SDL_Color text, TTF_Font *font) {
+  draw_chip(surface, rect, fill, border);
+  render_text(surface, font, rect.x + 10, rect.y + 6, text, label);
+}
+
 static void render_browser(SDL_Window *window, TTF_Font *font, BrowserState *state) {
+  SlateTheme theme = slate_theme();
   int w = 0;
   int h = 0;
   SDL_GetWindowSize(window, &w, &h);
   SDL_Surface *surface = SDL_GetWindowSurface(window);
-  SDL_FillRect(surface, NULL, SDL_MapRGB(surface->format, 18, 18, 22));
+  fill_vertical_gradient(surface, theme.bg0, theme.bg1);
 
-  SDL_Color text = {235, 235, 235, 255};
-  SDL_Color dim = {160, 160, 160, 255};
-  SDL_Color row_text = {240, 240, 240, 255};
-  SDL_Color row_dim = {190, 190, 190, 255};
+  SDL_Rect frame = {18, 18, w - 36, h - 36};
+  draw_panel(surface, frame, theme.panel, theme.border);
 
-  SDL_Rect header = {24, 18, w - 48, 56};
-  SDL_FillRect(surface, &header, SDL_MapRGB(surface->format, 30, 34, 45));
-  render_text(surface, font, 36, 30, text, "Open Image");
-  render_text(surface, font, 36, 54, dim, "Enter or click: open  Backspace: parent  Esc: cancel");
+  SDL_Rect header = {frame.x + 16, frame.y + 16, frame.w - 32, 72};
+  fill_horizontal_gradient(surface, header, theme.panel_alt, theme.panel_soft);
+  draw_border(surface, header, theme.border);
+  render_text(surface, font, header.x + 18, header.y + 13, theme.text, "Open Image");
+  render_text(surface, font, header.x + 18, header.y + 39, theme.muted, "Browse folders and pick an image");
 
-  char path_line[1024];
-  snprintf(path_line, sizeof(path_line), "%s", state->current_dir ? state->current_dir : ".");
-  render_text(surface, font, 24, 86, text, path_line);
+  SDL_Rect header_badge = {header.x + header.w - 168, header.y + 18, 148, 30};
+  draw_chip(surface, header_badge, theme.panel, theme.border_soft);
+  char header_count[64];
+  snprintf(header_count, sizeof(header_count), "%d items", state->count);
+  render_text(surface, font, header_badge.x + 14, header_badge.y + 6, theme.text, header_count);
 
-  int top = 124;
-  int bottom = 56;
-  int row_h = TTF_FontHeight(font) + 10;
-  int visible = browser_visible_rows(h, row_h, top, bottom);
+  SDL_Rect path_panel = {frame.x + 16, header.y + header.h + 12, frame.w - 32, 52};
+  draw_panel(surface, path_panel, theme.panel_alt, theme.border_soft);
+  render_text(surface, font, path_panel.x + 16, path_panel.y + 14, theme.muted, "Current");
+  render_text(surface, font, path_panel.x + 110, path_panel.y + 14, theme.text, state->current_dir ? state->current_dir : ".");
+
+  SDL_Rect list_panel = {frame.x + 16, path_panel.y + path_panel.h + 12, frame.w - 32,
+                         frame.h - (path_panel.y + path_panel.h + 12) - 74};
+  draw_panel(surface, list_panel, theme.panel, theme.border_soft);
+
+  int top = list_panel.y + 14;
+  int bottom = 20;
+  int row_h = TTF_FontHeight(font) + 14;
+  int visible = browser_visible_rows(list_panel.h - 28, row_h, 0, bottom);
   browser_ensure_visible(state, visible);
 
   if (state->count == 0) {
-    render_text(surface, font, 24, top + 10, dim, "No image files found in this folder.");
+    render_text(surface, font, list_panel.x + 18, list_panel.y + 18, theme.muted, "No image files found in this folder.");
   }
 
   for (int i = state->scroll_offset; i < state->count && i < state->scroll_offset + visible; i++) {
     int y = top + (i - state->scroll_offset) * row_h;
-    SDL_Rect row = {20, y, w - 40, row_h - 4};
+    SDL_Rect row = {list_panel.x + 12, y, list_panel.w - 24, row_h - 6};
     if (i == state->selected_index) {
-      SDL_FillRect(surface, &row, SDL_MapRGB(surface->format, 70, 90, 130));
+      fill_horizontal_gradient(surface, row, theme.accent_soft, theme.accent);
+      draw_border(surface, row, theme.accent);
     } else {
-      SDL_FillRect(surface, &row, SDL_MapRGB(surface->format, 28, 28, 34));
+      draw_panel(surface, row, theme.panel_alt, theme.border_soft);
     }
 
     BrowserEntry *entry = &state->entries[i];
-    render_text(surface, font, 34, y + 4, entry->is_dir ? text : row_text, entry->is_dir ? "[DIR] " : "[IMG] ");
-    render_text(surface, font, 92, y + 4, entry->is_dir ? text : row_dim, entry->display_name);
+    SDL_Rect badge = {row.x + 12, row.y + 8, 72, 24};
+    if (entry->is_dir) {
+      draw_icon_badge(surface, badge, "DIR", theme.panel, theme.border, theme.text, font);
+    } else {
+      draw_icon_badge(surface, badge, "IMG", theme.panel_soft, theme.border_soft, theme.text, font);
+    }
+
+    render_text(surface, font, row.x + 104, row.y + 7, theme.text, entry->display_name);
+    render_text(surface, font, row.x + row.w - 28, row.y + 7, theme.muted, entry->is_dir ? "/" : "");
   }
 
-  SDL_Rect footer = {20, h - 40, w - 40, 24};
-  SDL_FillRect(surface, &footer, SDL_MapRGB(surface->format, 24, 24, 28));
-  char footer_text[512];
-  snprintf(footer_text, sizeof(footer_text), "%d items  %d/%d", state->count, state->selected_index + 1, state->count > 0 ? state->count : 0);
-  render_text(surface, font, 30, h - 34, dim, footer_text);
+  SDL_Rect footer = {frame.x + 16, frame.y + frame.h - 52, frame.w - 32, 36};
+  draw_panel(surface, footer, theme.panel_alt, theme.border_soft);
+  SDL_Rect chip1 = {footer.x + 14, footer.y + 7, 116, 22};
+  SDL_Rect chip2 = {chip1.x + chip1.w + 10, footer.y + 7, 114, 22};
+  SDL_Rect chip3 = {chip2.x + chip2.w + 10, footer.y + 7, 132, 22};
+  draw_chip(surface, chip1, theme.panel, theme.border_soft);
+  draw_chip(surface, chip2, theme.panel, theme.border_soft);
+  draw_chip(surface, chip3, theme.panel, theme.border_soft);
+  render_text(surface, font, chip1.x + 10, chip1.y + 4, theme.text, "Enter Open");
+  render_text(surface, font, chip2.x + 10, chip2.y + 4, theme.text, "Backspace Up");
+  render_text(surface, font, chip3.x + 10, chip3.y + 4, theme.text, "Esc Cancel");
+
+  char footer_text[128];
+  snprintf(footer_text, sizeof(footer_text), "%d/%d", state->count > 0 ? state->selected_index + 1 : 0, state->count);
+  render_text(surface, font, footer.x + footer.w - 64, footer.y + 8, theme.muted, footer_text);
 
   SDL_UpdateWindowSurface(window);
 }
@@ -566,37 +728,13 @@ static void draw_line(SDL_Surface *surface, int x0, int y0, int x1, int y1, Uint
   }
 }
 
-static void draw_arrow(SDL_Surface *surface, SDL_Rect rect, int direction, Uint32 color) {
-  int cy = rect.y + rect.h / 2;
-  int top = rect.y + 20;
-  int bottom = rect.y + rect.h - 20;
-  int left = rect.x + 18;
-  int right = rect.x + rect.w - 18;
-
-  if (direction < 0) {
-    draw_line(surface, right, top, left, cy, color);
-    draw_line(surface, left, cy, right, bottom, color);
-  } else {
-    draw_line(surface, left, top, right, cy, color);
-    draw_line(surface, right, cy, left, bottom, color);
-  }
-}
-
 static void draw_nav_button(SDL_Surface *surface, SDL_Rect rect, int direction, int enabled) {
-  Uint32 bg = SDL_MapRGB(surface->format, enabled ? 52 : 32, enabled ? 52 : 32, enabled ? 52 : 32);
-  Uint32 border = SDL_MapRGB(surface->format, enabled ? 235 : 120, enabled ? 235 : 120, enabled ? 235 : 120);
-  SDL_FillRect(surface, &rect, bg);
-
-  SDL_Rect top = {rect.x, rect.y, rect.w, 2};
-  SDL_Rect bottom = {rect.x, rect.y + rect.h - 2, rect.w, 2};
-  SDL_Rect left = {rect.x, rect.y, 2, rect.h};
-  SDL_Rect right = {rect.x + rect.w - 2, rect.y, 2, rect.h};
-  SDL_FillRect(surface, &top, border);
-  SDL_FillRect(surface, &bottom, border);
-  SDL_FillRect(surface, &left, border);
-  SDL_FillRect(surface, &right, border);
-
-  draw_arrow(surface, rect, direction, border);
+  SlateTheme theme = slate_theme();
+  SDL_Color fill = enabled ? theme.panel_alt : theme.panel;
+  SDL_Color border = enabled ? theme.border : theme.border_soft;
+  SDL_Color text = enabled ? theme.text : theme.muted;
+  draw_button(surface, rect, fill, border);
+  draw_chevron(surface, rect, direction, text);
 }
 
 static int point_in_rect(int x, int y, SDL_Rect rect) {
@@ -651,10 +789,14 @@ SDL_Surface *rotate_surface(SDL_Surface *src, int degrees) {
 }
 
 static void render(Viewer *viewer) {
+  SlateTheme theme = slate_theme();
   SDL_Window *pwindow = viewer->window;
   SDL_Surface *image = viewer->image;
+  TTF_Font *font = viewer->ui_font;
   SDL_Rect display;
   SDL_GetDisplayBounds(0, &display);
+
+  if (!font) return;
 
   SDL_Surface *rotated = rotate_surface(image, viewer->rotation);
 
@@ -662,9 +804,16 @@ static void render(Viewer *viewer) {
   int img_h = rotated->h;
 
   float fit_scale = 1.0;
-  if (img_w > display.w || img_h > display.h) {
-    float scale_w = (float)display.w / img_w;
-    float scale_h = (float)display.h / img_h;
+  int chrome_w = 56;
+  int chrome_h = 184;
+  int available_w = display.w - chrome_w;
+  int available_h = display.h - chrome_h;
+  if (available_w < 320) available_w = 320;
+  if (available_h < 240) available_h = 240;
+
+  if (img_w > available_w || img_h > available_h) {
+    float scale_w = (float)available_w / img_w;
+    float scale_h = (float)available_h / img_h;
     fit_scale = (scale_w < scale_h) ? scale_w : scale_h;
   }
 
@@ -676,23 +825,82 @@ static void render(Viewer *viewer) {
   if (viewer->fullscreen) {
     SDL_SetWindowSize(pwindow, display.w, display.h);
   } else {
-    SDL_SetWindowSize(pwindow, render_w, render_h);
+    int window_w = render_w + chrome_w;
+    int window_h = render_h + chrome_h;
+    if (window_w > display.w) window_w = display.w;
+    if (window_h > display.h) window_h = display.h;
+    if (window_w < 720) window_w = 720;
+    if (window_h < 540) window_h = 540;
+    SDL_SetWindowSize(pwindow, window_w, window_h);
   }
 
   SDL_Surface *psurface = SDL_GetWindowSurface(pwindow);
-  SDL_FillRect(psurface, NULL, SDL_MapRGB(psurface->format, 0, 0, 0));
+  fill_vertical_gradient(psurface, theme.bg0, theme.bg1);
 
-  int offset_x = (psurface->w - render_w) / 2;
-  int offset_y = (psurface->h - render_h) / 2;
+  SDL_Rect outer = {16, 16, psurface->w - 32, psurface->h - 32};
+  draw_panel(psurface, outer, theme.panel, theme.border);
+
+  SDL_Rect header = {outer.x + 16, outer.y + 16, outer.w - 32, 72};
+  fill_horizontal_gradient(psurface, header, theme.panel_alt, theme.panel_soft);
+  draw_border(psurface, header, theme.border_soft);
+
+  const char *name = path_basename(viewer->list.items[viewer->current_index]);
+  char title[512];
+  char subtitle[1024];
+  char info_text[128];
+  snprintf(title, sizeof(title), "%s", name);
+  SDL_Rect title_box = {header.x + 18, header.y + 12, header.w - 250, 24};
+  SDL_Rect subtitle_box = {header.x + 18, header.y + 40, header.w - 250, 20};
+  snprintf(subtitle, sizeof(subtitle), "%s", viewer->list.items[viewer->current_index]);
+  render_text(psurface, font, title_box.x, title_box.y, theme.text, title);
+  render_text(psurface, font, subtitle_box.x, subtitle_box.y, theme.muted, subtitle);
+
+  SDL_Rect info_badge = {header.x + header.w - 214, header.y + 18, 194, 30};
+  draw_chip(psurface, info_badge, theme.panel, theme.border_soft);
+  snprintf(info_text, sizeof(info_text), "%d / %d", viewer->current_index + 1, viewer->list.count);
+  render_text(psurface, font, info_badge.x + 16, info_badge.y + 6, theme.text, info_text);
+
+  SDL_Rect content = {outer.x + 16, header.y + header.h + 12, outer.w - 32,
+                      outer.h - (header.h + 12) - 86};
+  draw_panel(psurface, content, theme.panel_alt, theme.border_soft);
+
+  SDL_Rect image_pad = {content.x + 20, content.y + 20, content.w - 40, content.h - 40};
+  int offset_x = image_pad.x + (image_pad.w - render_w) / 2;
+  int offset_y = image_pad.y + (image_pad.h - render_h) / 2;
+  if (offset_x < image_pad.x) offset_x = image_pad.x;
+  if (offset_y < image_pad.y) offset_y = image_pad.y;
   SDL_Rect dst = {offset_x, offset_y, render_w, render_h};
+
+  SDL_Rect image_border = {image_pad.x - 1, image_pad.y - 1, image_pad.w + 2, image_pad.h + 2};
+  draw_panel(psurface, image_border, theme.panel, theme.border_soft);
+  SDL_Rect image_bg = {image_pad.x, image_pad.y, image_pad.w, image_pad.h};
+  SDL_FillRect(psurface, &image_bg, SDL_MapRGB(psurface->format, 2, 6, 23));
   SDL_BlitScaled(rotated, NULL, psurface, &dst);
 
-  SDL_Rect prev_button;
-  SDL_Rect next_button;
-  get_nav_buttons(psurface->w, psurface->h, &prev_button, &next_button);
+  SDL_Rect prev_button = {content.x + 16, content.y + content.h / 2 - 28, 56, 56};
+  SDL_Rect next_button = {content.x + content.w - 72, content.y + content.h / 2 - 28, 56, 56};
   int enabled = viewer->list.count > 1;
   draw_nav_button(psurface, prev_button, -1, enabled);
   draw_nav_button(psurface, next_button, 1, enabled);
+
+  SDL_Rect footer = {outer.x + 16, outer.y + outer.h - 48, outer.w - 32, 32};
+  draw_panel(psurface, footer, theme.panel_alt, theme.border_soft);
+  SDL_Rect chip1 = {footer.x + 14, footer.y + 5, 124, 22};
+  SDL_Rect chip2 = {chip1.x + chip1.w + 10, footer.y + 5, 90, 22};
+  SDL_Rect chip3 = {chip2.x + chip2.w + 10, footer.y + 5, 96, 22};
+  SDL_Rect chip4 = {chip3.x + chip3.w + 10, footer.y + 5, 76, 22};
+  draw_chip(psurface, chip1, theme.panel, theme.border_soft);
+  draw_chip(psurface, chip2, theme.panel, theme.border_soft);
+  draw_chip(psurface, chip3, theme.panel, theme.border_soft);
+  draw_chip(psurface, chip4, theme.panel, theme.border_soft);
+  render_text(psurface, font, chip1.x + 10, chip1.y + 4, theme.text, "Left / Right");
+  render_text(psurface, font, chip2.x + 10, chip2.y + 4, theme.text, "R Rotate");
+  render_text(psurface, font, chip3.x + 10, chip3.y + 4, theme.text, "+ / - Zoom");
+  render_text(psurface, font, chip4.x + 10, chip4.y + 4, theme.text, "O Open");
+
+  char status[128];
+  snprintf(status, sizeof(status), "%dx%d", img_w, img_h);
+  render_text(psurface, font, footer.x + footer.w - 86, footer.y + 4, theme.muted, status);
 
   SDL_UpdateWindowSurface(pwindow);
 
@@ -745,6 +953,10 @@ static char *pick_image_path(Viewer *viewer, const char *current_path) {
   BrowserState browser;
   memset(&browser, 0, sizeof(browser));
 
+  if (!viewer || !viewer->ui_font) {
+    return NULL;
+  }
+
   const char *start_dir = NULL;
   char *derived_dir = NULL;
   if (current_path && current_path[0] != '\0') {
@@ -759,18 +971,7 @@ static char *pick_image_path(Viewer *viewer, const char *current_path) {
     }
   }
 
-  TTF_Font *font = NULL;
-  const char *font_path = find_ui_font_path();
-  if (font_path) {
-    font = TTF_OpenFont(font_path, 20);
-  }
-  if (!font) {
-    free(derived_dir);
-    return NULL;
-  }
-
   if (!browser_set_dir(&browser, start_dir)) {
-    TTF_CloseFont(font);
     free(derived_dir);
     return NULL;
   }
@@ -782,7 +983,7 @@ static char *pick_image_path(Viewer *viewer, const char *current_path) {
 
   while (running) {
     if (dirty) {
-      render_browser(viewer->window, font, &browser);
+      render_browser(viewer->window, viewer->ui_font, &browser);
       dirty = 0;
     }
 
@@ -802,7 +1003,7 @@ static char *pick_image_path(Viewer *viewer, const char *current_path) {
         int w = 0;
         int h = 0;
         SDL_GetWindowSize(viewer->window, &w, &h);
-        int visible = browser_visible_rows(h, TTF_FontHeight(font) + 10, 124, 56);
+        int visible = browser_visible_rows(h, TTF_FontHeight(viewer->ui_font) + 10, 124, 56);
 
         switch (event.key.keysym.sym) {
           case SDLK_ESCAPE:
@@ -860,14 +1061,14 @@ static char *pick_image_path(Viewer *viewer, const char *current_path) {
         int w = 0;
         int h = 0;
         SDL_GetWindowSize(viewer->window, &w, &h);
-        int visible = browser_visible_rows(h, TTF_FontHeight(font) + 10, 124, 56);
+        int visible = browser_visible_rows(h, TTF_FontHeight(viewer->ui_font) + 10, 124, 56);
         browser_move_selection(&browser, -event.wheel.y, visible);
         dirty = 1;
       } else if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
         int w = 0;
         int h = 0;
         SDL_GetWindowSize(viewer->window, &w, &h);
-        int row_h = TTF_FontHeight(font) + 10;
+        int row_h = TTF_FontHeight(viewer->ui_font) + 10;
         int top = 124;
         int idx = browser.scroll_offset + ((event.button.y - top) / row_h);
         if (event.button.y >= top && idx >= 0 && idx < browser.count) {
@@ -885,7 +1086,6 @@ static char *pick_image_path(Viewer *viewer, const char *current_path) {
     } while (SDL_PollEvent(&event));
   }
 
-  TTF_CloseFont(font);
   free_browser_state(&browser);
   return selected_path;
 }
@@ -952,10 +1152,21 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  const char *font_path = find_ui_font_path();
+  viewer.ui_font = font_path ? TTF_OpenFont(font_path, 20) : NULL;
+  if (!viewer.ui_font) {
+    fprintf(stderr, "Could not load UI font\n");
+    TTF_Quit();
+    IMG_Quit();
+    SDL_Quit();
+    return 1;
+  }
+
   char *picked_path = NULL;
   if (argc > 1) {
     picked_path = dup_string(argv[1]);
     if (!picked_path) {
+      TTF_CloseFont(viewer.ui_font);
       TTF_Quit();
       IMG_Quit();
       SDL_Quit();
@@ -973,6 +1184,7 @@ int main(int argc, char *argv[]) {
                                      SDL_WINDOWPOS_CENTERED, browser_w, browser_h, 0);
     if (!viewer.window) {
       fprintf(stderr, "SDL_CreateWindow error: %s\n", SDL_GetError());
+      TTF_CloseFont(viewer.ui_font);
       TTF_Quit();
       IMG_Quit();
       SDL_Quit();
@@ -983,6 +1195,7 @@ int main(int argc, char *argv[]) {
     if (!picked_path) {
       SDL_DestroyWindow(viewer.window);
       viewer.window = NULL;
+      TTF_CloseFont(viewer.ui_font);
       TTF_Quit();
       IMG_Quit();
       SDL_Quit();
@@ -994,6 +1207,7 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Could not open image path %s\n", picked_path);
     free(picked_path);
     if (viewer.window) SDL_DestroyWindow(viewer.window);
+    TTF_CloseFont(viewer.ui_font);
     TTF_Quit();
     IMG_Quit();
     SDL_Quit();
@@ -1004,6 +1218,7 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Could not build image list for %s\n", picked_path);
     free(picked_path);
     if (viewer.window) SDL_DestroyWindow(viewer.window);
+    TTF_CloseFont(viewer.ui_font);
     TTF_Quit();
     IMG_Quit();
     SDL_Quit();
@@ -1032,6 +1247,7 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "SDL_CreateWindow error: %s\n", SDL_GetError());
       cleanup_viewer(&viewer);
       free(picked_path);
+      TTF_CloseFont(viewer.ui_font);
       TTF_Quit();
       IMG_Quit();
       SDL_Quit();
@@ -1114,6 +1330,7 @@ int main(int argc, char *argv[]) {
   }
 
   cleanup_viewer(&viewer);
+  TTF_CloseFont(viewer.ui_font);
   TTF_Quit();
   IMG_Quit();
   SDL_Quit();

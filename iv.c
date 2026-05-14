@@ -1,11 +1,14 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
+#include <SDL2/SDL_ttf.h>
 #include <dirent.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/stat.h>
+#include <strings.h>
 
 typedef struct {
   char **items;
@@ -21,6 +24,21 @@ typedef struct {
   float zoom;
   int fullscreen;
 } Viewer;
+
+typedef struct {
+  char *display_name;
+  char *path;
+  int is_dir;
+} BrowserEntry;
+
+typedef struct {
+  BrowserEntry *entries;
+  int count;
+  int capacity;
+  char *current_dir;
+  int selected_index;
+  int scroll_offset;
+} BrowserState;
 
 static char *dup_string(const char *src) {
   size_t len = strlen(src);
@@ -84,6 +102,262 @@ static char *join_path(const char *dir, const char *name) {
   }
 
   return path;
+}
+
+static int file_exists_regular(const char *path) {
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static int is_directory(const char *path) {
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static int is_supported_image_name(const char *name);
+
+static void free_browser_state(BrowserState *state) {
+  if (!state) return;
+  for (int i = 0; i < state->count; i++) {
+    free(state->entries[i].display_name);
+    free(state->entries[i].path);
+  }
+  free(state->entries);
+  free(state->current_dir);
+  memset(state, 0, sizeof(*state));
+}
+
+static int browser_entry_cmp(const void *a, const void *b) {
+  const BrowserEntry *ea = a;
+  const BrowserEntry *eb = b;
+  if (strcmp(ea->display_name, "..") == 0) return -1;
+  if (strcmp(eb->display_name, "..") == 0) return 1;
+  if (ea->is_dir != eb->is_dir) {
+    return eb->is_dir - ea->is_dir;
+  }
+  return strcasecmp(ea->display_name, eb->display_name);
+}
+
+static int browser_add_entry(BrowserState *state, const char *display_name, const char *path, int is_dir) {
+  if (state->count == state->capacity) {
+    int next_capacity = state->capacity == 0 ? 32 : state->capacity * 2;
+    BrowserEntry *next = realloc(state->entries, (size_t)next_capacity * sizeof(BrowserEntry));
+    if (!next) return 0;
+    state->entries = next;
+    state->capacity = next_capacity;
+  }
+
+  BrowserEntry *entry = &state->entries[state->count++];
+  memset(entry, 0, sizeof(*entry));
+  entry->display_name = dup_string(display_name);
+  entry->path = dup_string(path);
+  entry->is_dir = is_dir;
+  if (!entry->display_name || !entry->path) {
+    free(entry->display_name);
+    free(entry->path);
+    state->count--;
+    return 0;
+  }
+  return 1;
+}
+
+static int browser_set_dir(BrowserState *state, const char *dir) {
+  DIR *handle = NULL;
+  struct dirent *entry;
+  char *normalized = NULL;
+  char *parent = NULL;
+  int ok = 0;
+
+  if (!state || !dir) return 0;
+
+  handle = opendir(dir);
+  if (!handle) return 0;
+
+  normalized = realpath(dir, NULL);
+  if (!normalized) {
+    normalized = dup_string(dir);
+  }
+  if (!normalized) goto cleanup;
+
+  free_browser_state(state);
+  memset(state, 0, sizeof(*state));
+  state->current_dir = normalized;
+  normalized = NULL;
+
+  if (strcmp(state->current_dir, "/") != 0) {
+    parent = path_dirname(state->current_dir);
+    if (!parent) goto cleanup;
+    if (!browser_add_entry(state, "..", parent, 1)) goto cleanup;
+  }
+
+  while ((entry = readdir(handle)) != NULL) {
+    if (entry->d_name[0] == '.' &&
+        (entry->d_name[1] == '\0' ||
+         (entry->d_name[1] == '.' && entry->d_name[2] == '\0'))) {
+      continue;
+    }
+
+    if (entry->d_name[0] == '.') {
+      continue;
+    }
+
+    char *full_path = join_path(state->current_dir, entry->d_name);
+    if (!full_path) goto cleanup;
+
+    if (is_directory(full_path)) {
+      ok = browser_add_entry(state, entry->d_name, full_path, 1);
+      free(full_path);
+      if (!ok) goto cleanup;
+      ok = 0;
+      continue;
+    }
+
+    if (file_exists_regular(full_path) && is_supported_image_name(entry->d_name)) {
+      ok = browser_add_entry(state, entry->d_name, full_path, 0);
+      free(full_path);
+      if (!ok) goto cleanup;
+      ok = 0;
+      continue;
+    }
+
+    free(full_path);
+  }
+
+  qsort(state->entries, (size_t)state->count, sizeof(BrowserEntry), browser_entry_cmp);
+  state->selected_index = 0;
+  state->scroll_offset = 0;
+  ok = 1;
+
+cleanup:
+  free(parent);
+  free(normalized);
+  if (!ok) {
+    if (handle) closedir(handle);
+    free_browser_state(state);
+    return 0;
+  }
+
+  if (handle) closedir(handle);
+  return 1;
+}
+
+static int browser_visible_rows(int window_h, int row_h, int top_margin, int bottom_margin) {
+  int usable = window_h - top_margin - bottom_margin;
+  if (usable < row_h) return 1;
+  return usable / row_h;
+}
+
+static void browser_ensure_visible(BrowserState *state, int visible_rows) {
+  if (state->selected_index < state->scroll_offset) {
+    state->scroll_offset = state->selected_index;
+  } else if (state->selected_index >= state->scroll_offset + visible_rows) {
+    state->scroll_offset = state->selected_index - visible_rows + 1;
+  }
+  if (state->scroll_offset < 0) state->scroll_offset = 0;
+}
+
+static void browser_move_selection(BrowserState *state, int delta, int visible_rows) {
+  if (state->count <= 0) return;
+  state->selected_index += delta;
+  if (state->selected_index < 0) state->selected_index = 0;
+  if (state->selected_index >= state->count) state->selected_index = state->count - 1;
+  browser_ensure_visible(state, visible_rows);
+}
+
+static void browser_jump_to(BrowserState *state, int index, int visible_rows) {
+  if (state->count <= 0) return;
+  if (index < 0) index = 0;
+  if (index >= state->count) index = state->count - 1;
+  state->selected_index = index;
+  browser_ensure_visible(state, visible_rows);
+}
+
+static char *browser_activate_selected(BrowserState *state) {
+  if (!state || state->selected_index < 0 || state->selected_index >= state->count) return NULL;
+  BrowserEntry *entry = &state->entries[state->selected_index];
+  if (entry->is_dir) {
+    if (!browser_set_dir(state, entry->path)) return NULL;
+    return NULL;
+  }
+  return dup_string(entry->path);
+}
+
+static const char *find_ui_font_path(void) {
+  static const char *candidates[] = {
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+    NULL
+  };
+
+  for (int i = 0; candidates[i]; i++) {
+    if (access(candidates[i], R_OK) == 0) {
+      return candidates[i];
+    }
+  }
+  return NULL;
+}
+
+static void render_text(SDL_Surface *surface, TTF_Font *font, int x, int y, SDL_Color color, const char *text) {
+  SDL_Surface *label = TTF_RenderUTF8_Blended(font, text, color);
+  if (!label) return;
+  SDL_Rect dst = {x, y, label->w, label->h};
+  SDL_BlitSurface(label, NULL, surface, &dst);
+  SDL_FreeSurface(label);
+}
+
+static void render_browser(SDL_Window *window, TTF_Font *font, BrowserState *state) {
+  int w = 0;
+  int h = 0;
+  SDL_GetWindowSize(window, &w, &h);
+  SDL_Surface *surface = SDL_GetWindowSurface(window);
+  SDL_FillRect(surface, NULL, SDL_MapRGB(surface->format, 18, 18, 22));
+
+  SDL_Color text = {235, 235, 235, 255};
+  SDL_Color dim = {160, 160, 160, 255};
+  SDL_Color row_text = {240, 240, 240, 255};
+  SDL_Color row_dim = {190, 190, 190, 255};
+
+  SDL_Rect header = {24, 18, w - 48, 56};
+  SDL_FillRect(surface, &header, SDL_MapRGB(surface->format, 30, 34, 45));
+  render_text(surface, font, 36, 30, text, "Open Image");
+  render_text(surface, font, 36, 54, dim, "Enter or click: open  Backspace: parent  Esc: cancel");
+
+  char path_line[1024];
+  snprintf(path_line, sizeof(path_line), "%s", state->current_dir ? state->current_dir : ".");
+  render_text(surface, font, 24, 86, text, path_line);
+
+  int top = 124;
+  int bottom = 56;
+  int row_h = TTF_FontHeight(font) + 10;
+  int visible = browser_visible_rows(h, row_h, top, bottom);
+  browser_ensure_visible(state, visible);
+
+  if (state->count == 0) {
+    render_text(surface, font, 24, top + 10, dim, "No image files found in this folder.");
+  }
+
+  for (int i = state->scroll_offset; i < state->count && i < state->scroll_offset + visible; i++) {
+    int y = top + (i - state->scroll_offset) * row_h;
+    SDL_Rect row = {20, y, w - 40, row_h - 4};
+    if (i == state->selected_index) {
+      SDL_FillRect(surface, &row, SDL_MapRGB(surface->format, 70, 90, 130));
+    } else {
+      SDL_FillRect(surface, &row, SDL_MapRGB(surface->format, 28, 28, 34));
+    }
+
+    BrowserEntry *entry = &state->entries[i];
+    render_text(surface, font, 34, y + 4, entry->is_dir ? text : row_text, entry->is_dir ? "[DIR] " : "[IMG] ");
+    render_text(surface, font, 92, y + 4, entry->is_dir ? text : row_dim, entry->display_name);
+  }
+
+  SDL_Rect footer = {20, h - 40, w - 40, 24};
+  SDL_FillRect(surface, &footer, SDL_MapRGB(surface->format, 24, 24, 28));
+  char footer_text[512];
+  snprintf(footer_text, sizeof(footer_text), "%d items  %d/%d", state->count, state->selected_index + 1, state->count > 0 ? state->count : 0);
+  render_text(surface, font, 30, h - 34, dim, footer_text);
+
+  SDL_UpdateWindowSurface(window);
 }
 
 static int ends_with_ci(const char *name, const char *suffix) {
@@ -467,8 +741,195 @@ static void cleanup_viewer(Viewer *viewer) {
   free_image_list(&viewer->list);
 }
 
+static char *pick_image_path(Viewer *viewer, const char *current_path) {
+  BrowserState browser;
+  memset(&browser, 0, sizeof(browser));
+
+  const char *start_dir = NULL;
+  char *derived_dir = NULL;
+  if (current_path && current_path[0] != '\0') {
+    derived_dir = path_dirname(current_path);
+    start_dir = derived_dir;
+  } else {
+    const char *home = getenv("HOME");
+    if (home && home[0] != '\0') {
+      start_dir = home;
+    } else {
+      start_dir = ".";
+    }
+  }
+
+  TTF_Font *font = NULL;
+  const char *font_path = find_ui_font_path();
+  if (font_path) {
+    font = TTF_OpenFont(font_path, 20);
+  }
+  if (!font) {
+    free(derived_dir);
+    return NULL;
+  }
+
+  if (!browser_set_dir(&browser, start_dir)) {
+    TTF_CloseFont(font);
+    free(derived_dir);
+    return NULL;
+  }
+  free(derived_dir);
+
+  int dirty = 1;
+  char *selected_path = NULL;
+  int running = 1;
+
+  while (running) {
+    if (dirty) {
+      render_browser(viewer->window, font, &browser);
+      dirty = 0;
+    }
+
+    SDL_Event event;
+    if (!SDL_WaitEventTimeout(&event, 50)) {
+      continue;
+    }
+
+    do {
+      if (event.type == SDL_QUIT) {
+        running = 0;
+        break;
+      } else if (event.type == SDL_WINDOWEVENT &&
+                 event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+        dirty = 1;
+      } else if (event.type == SDL_KEYDOWN) {
+        int w = 0;
+        int h = 0;
+        SDL_GetWindowSize(viewer->window, &w, &h);
+        int visible = browser_visible_rows(h, TTF_FontHeight(font) + 10, 124, 56);
+
+        switch (event.key.keysym.sym) {
+          case SDLK_ESCAPE:
+            running = 0;
+            break;
+          case SDLK_UP:
+            browser_move_selection(&browser, -1, visible);
+            dirty = 1;
+            break;
+          case SDLK_DOWN:
+            browser_move_selection(&browser, 1, visible);
+            dirty = 1;
+            break;
+          case SDLK_PAGEUP:
+            browser_move_selection(&browser, -visible, visible);
+            dirty = 1;
+            break;
+          case SDLK_PAGEDOWN:
+            browser_move_selection(&browser, visible, visible);
+            dirty = 1;
+            break;
+          case SDLK_HOME:
+            browser_jump_to(&browser, 0, visible);
+            dirty = 1;
+            break;
+          case SDLK_END:
+            browser_jump_to(&browser, browser.count - 1, visible);
+            dirty = 1;
+            break;
+          case SDLK_BACKSPACE:
+          case SDLK_LEFT:
+            if (browser.current_dir && strcmp(browser.current_dir, "/") != 0) {
+              char *parent_dir = path_dirname(browser.current_dir);
+              if (parent_dir && browser_set_dir(&browser, parent_dir)) {
+                dirty = 1;
+              }
+              free(parent_dir);
+            }
+            break;
+          case SDLK_RETURN:
+          case SDLK_KP_ENTER: {
+            char *picked = browser_activate_selected(&browser);
+            if (picked) {
+              selected_path = picked;
+              running = 0;
+            } else {
+              dirty = 1;
+            }
+            break;
+          }
+          default:
+            break;
+        }
+      } else if (event.type == SDL_MOUSEWHEEL) {
+        int w = 0;
+        int h = 0;
+        SDL_GetWindowSize(viewer->window, &w, &h);
+        int visible = browser_visible_rows(h, TTF_FontHeight(font) + 10, 124, 56);
+        browser_move_selection(&browser, -event.wheel.y, visible);
+        dirty = 1;
+      } else if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
+        int w = 0;
+        int h = 0;
+        SDL_GetWindowSize(viewer->window, &w, &h);
+        int row_h = TTF_FontHeight(font) + 10;
+        int top = 124;
+        int idx = browser.scroll_offset + ((event.button.y - top) / row_h);
+        if (event.button.y >= top && idx >= 0 && idx < browser.count) {
+          browser.selected_index = idx;
+          browser_ensure_visible(&browser, browser_visible_rows(h, row_h, top, 56));
+          char *picked = browser_activate_selected(&browser);
+          if (picked) {
+            selected_path = picked;
+            running = 0;
+          } else {
+            dirty = 1;
+          }
+        }
+      }
+    } while (SDL_PollEvent(&event));
+  }
+
+  TTF_CloseFont(font);
+  free_browser_state(&browser);
+  return selected_path;
+}
+
+static int load_viewer_from_path(Viewer *viewer, const char *filepath) {
+  ImageList next_list;
+  int next_index = -1;
+  char *normalized_current_path = NULL;
+  SDL_Surface *next_image = NULL;
+  SDL_Surface *old_image = NULL;
+  ImageList old_list = viewer->list;
+
+  if (!build_image_list(filepath, &next_list, &next_index, &normalized_current_path)) {
+    return 0;
+  }
+
+  next_image = load_surface_for_path(normalized_current_path);
+  if (!next_image) {
+    free(normalized_current_path);
+    free_image_list(&next_list);
+    return 0;
+  }
+
+  old_image = viewer->image;
+  viewer->image = next_image;
+  viewer->list = next_list;
+  viewer->current_index = next_index;
+  viewer->rotation = 0;
+  viewer->zoom = 1.0f;
+
+  if (old_image) {
+    SDL_FreeSurface(old_image);
+  }
+  free_image_list(&old_list);
+  free(normalized_current_path);
+
+  update_window_title(viewer);
+  if (viewer->window) {
+    render(viewer);
+  }
+  return 1;
+}
+
 int main(int argc, char *argv[]) {
-  const char *filepath = (argc > 1) ? argv[1] : "/home/shreyanshxyz/Downloads/i.jpg";
   Viewer viewer;
   memset(&viewer, 0, sizeof(viewer));
 
@@ -484,54 +945,106 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  char *normalized_current_path = NULL;
-  if (!build_image_list(filepath, &viewer.list, &viewer.current_index, &normalized_current_path)) {
-    fprintf(stderr, "Could not build image list for %s\n", filepath);
+  if (TTF_Init() != 0) {
+    fprintf(stderr, "TTF_Init error: %s\n", TTF_GetError());
     IMG_Quit();
     SDL_Quit();
     return 1;
   }
 
-  viewer.image = load_surface_for_path(normalized_current_path);
-  if (viewer.image == NULL) {
-    free(normalized_current_path);
-    free_image_list(&viewer.list);
+  char *picked_path = NULL;
+  if (argc > 1) {
+    picked_path = dup_string(argv[1]);
+    if (!picked_path) {
+      TTF_Quit();
+      IMG_Quit();
+      SDL_Quit();
+      return 1;
+    }
+  } else {
+    SDL_Rect display;
+    SDL_GetDisplayBounds(0, &display);
+    int browser_w = display.w > 1200 ? 1200 : display.w - 100;
+    int browser_h = display.h > 900 ? 900 : display.h - 100;
+    if (browser_w < 640) browser_w = 640;
+    if (browser_h < 480) browser_h = 480;
+
+    viewer.window = SDL_CreateWindow("Image Viewer - Open Image", SDL_WINDOWPOS_CENTERED,
+                                     SDL_WINDOWPOS_CENTERED, browser_w, browser_h, 0);
+    if (!viewer.window) {
+      fprintf(stderr, "SDL_CreateWindow error: %s\n", SDL_GetError());
+      TTF_Quit();
+      IMG_Quit();
+      SDL_Quit();
+      return 1;
+    }
+
+    picked_path = pick_image_path(&viewer, NULL);
+    if (!picked_path) {
+      SDL_DestroyWindow(viewer.window);
+      viewer.window = NULL;
+      TTF_Quit();
+      IMG_Quit();
+      SDL_Quit();
+      return 0;
+    }
+  }
+
+  if (!file_exists_regular(picked_path)) {
+    fprintf(stderr, "Could not open image path %s\n", picked_path);
+    free(picked_path);
+    if (viewer.window) SDL_DestroyWindow(viewer.window);
+    TTF_Quit();
     IMG_Quit();
     SDL_Quit();
     return 1;
   }
 
-  SDL_Rect display;
-  SDL_GetDisplayBounds(0, &display);
-
-  int win_w = viewer.image->w;
-  int win_h = viewer.image->h;
-
-  if (win_w > display.w || win_h > display.h) {
-    float scale_w = (float)display.w / win_w;
-    float scale_h = (float)display.h / win_h;
-    float scale = (scale_w < scale_h) ? scale_w : scale_h;
-    win_w = (int)(win_w * scale);
-    win_h = (int)(win_h * scale);
-  }
-
-  SDL_Window *pwindow =
-      SDL_CreateWindow("Image Viewer", SDL_WINDOWPOS_CENTERED,
-                       SDL_WINDOWPOS_CENTERED, win_w, win_h, 0);
-  if (!pwindow) {
-    fprintf(stderr, "SDL_CreateWindow error: %s\n", SDL_GetError());
-    cleanup_viewer(&viewer);
+  if (!load_viewer_from_path(&viewer, picked_path)) {
+    fprintf(stderr, "Could not build image list for %s\n", picked_path);
+    free(picked_path);
+    if (viewer.window) SDL_DestroyWindow(viewer.window);
+    TTF_Quit();
     IMG_Quit();
     SDL_Quit();
     return 1;
   }
-  viewer.window = pwindow;
+
+  if (!viewer.window) {
+    SDL_Rect display;
+    SDL_GetDisplayBounds(0, &display);
+
+    int win_w = viewer.image->w;
+    int win_h = viewer.image->h;
+
+    if (win_w > display.w || win_h > display.h) {
+      float scale_w = (float)display.w / win_w;
+      float scale_h = (float)display.h / win_h;
+      float scale = (scale_w < scale_h) ? scale_w : scale_h;
+      win_w = (int)(win_w * scale);
+      win_h = (int)(win_h * scale);
+    }
+
+    viewer.window =
+        SDL_CreateWindow("Image Viewer", SDL_WINDOWPOS_CENTERED,
+                         SDL_WINDOWPOS_CENTERED, win_w, win_h, 0);
+    if (!viewer.window) {
+      fprintf(stderr, "SDL_CreateWindow error: %s\n", SDL_GetError());
+      cleanup_viewer(&viewer);
+      free(picked_path);
+      TTF_Quit();
+      IMG_Quit();
+      SDL_Quit();
+      return 1;
+    }
+  }
+
   viewer.rotation = 0;
   viewer.zoom = 1.0f;
   viewer.fullscreen = 0;
   update_window_title(&viewer);
 
-  free(normalized_current_path);
+  free(picked_path);
 
   render(&viewer);
 
@@ -547,9 +1060,9 @@ int main(int argc, char *argv[]) {
         } else if (event.key.keysym.sym == SDLK_f) {
           viewer.fullscreen = !viewer.fullscreen;
           if (viewer.fullscreen) {
-            SDL_SetWindowFullscreen(pwindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
+            SDL_SetWindowFullscreen(viewer.window, SDL_WINDOW_FULLSCREEN_DESKTOP);
           } else {
-            SDL_SetWindowFullscreen(pwindow, 0);
+            SDL_SetWindowFullscreen(viewer.window, 0);
           }
           render(&viewer);
         } else if (event.key.keysym.sym == SDLK_LEFT) {
@@ -569,11 +1082,24 @@ int main(int argc, char *argv[]) {
         } else if (event.key.keysym.sym == SDLK_0) {
           viewer.zoom = 1.0f;
           render(&viewer);
+        } else if (event.key.keysym.sym == SDLK_o) {
+          char *new_path = pick_image_path(&viewer,
+                                           viewer.list.count > 0 && viewer.current_index >= 0
+                                               ? viewer.list.items[viewer.current_index]
+                                               : NULL);
+          if (new_path) {
+            if (!file_exists_regular(new_path)) {
+              fprintf(stderr, "Could not open image path %s\n", new_path);
+            } else if (!load_viewer_from_path(&viewer, new_path)) {
+              fprintf(stderr, "Could not load image path %s\n", new_path);
+            }
+            free(new_path);
+          }
         }
       } else if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
         int w = 0;
         int h = 0;
-        SDL_GetWindowSize(pwindow, &w, &h);
+        SDL_GetWindowSize(viewer.window, &w, &h);
         SDL_Rect prev_button;
         SDL_Rect next_button;
         get_nav_buttons(w, h, &prev_button, &next_button);
@@ -588,6 +1114,7 @@ int main(int argc, char *argv[]) {
   }
 
   cleanup_viewer(&viewer);
+  TTF_Quit();
   IMG_Quit();
   SDL_Quit();
   return 0;
